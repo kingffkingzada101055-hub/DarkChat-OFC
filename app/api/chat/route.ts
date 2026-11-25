@@ -47,11 +47,10 @@ export async function POST(req: NextRequest) {
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "openai/gpt-oss-120b",
+        model: "llama-3.3-70b-versatile",
         messages: groqMessages,
         temperature: 0.7,
         max_tokens: 2048,
-        reasoning_effort: "low",
       }),
     });
 
