@@ -51,17 +51,20 @@ export async function POST(req: NextRequest) {
         messages: groqMessages,
         temperature: 0.7,
         max_tokens: 2048,
+        reasoning_effort: "none",
       }),
     });
 
     if (!resp.ok) {
       const errText = await resp.text();
       console.error("Groq error:", errText);
-      return NextResponse.json({ reply: "Erro ao falar com o modelo. Tenta de novo em instantes." });
+      return NextResponse.json({
+        reply: `Erro ao falar com o modelo (${resp.status}): ${errText.slice(0, 300)}`,
+      });
     }
 
     const data = await resp.json();
-    let reply: string = data?.choices?.[0]?.message?.content ?? "Não consegui gerar resposta.";
+    let reply: string = data?.choices?.[0]?.message?.content || "Não consegui gerar resposta.";
     if (instr && tg && !reply.trimStart().startsWith(tg)) {
       reply = `${tg}\n${reply}`;
     }
