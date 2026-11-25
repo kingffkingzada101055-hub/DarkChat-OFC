@@ -15,6 +15,45 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [jbSaved, setJbSaved] = useState("");
+  const [jbDraft, setJbDraft] = useState("");
+
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("darkchat_jailbreak");
+      if (v) setJbSaved(v);
+    } catch {}
+  }, []);
+
+  // Última linha no formato [X] vira o identificador; o resto são as instruções.
+  function parseJb(raw: string) {
+    const lines = raw.replace(/\s+$/, "").split("\n");
+    const last = (lines[lines.length - 1] || "").trim();
+    if (lines.length > 1 && /^\[[^\]]{1,20}\]$/.test(last)) {
+      return { instr: lines.slice(0, -1).join("\n").trim(), tag: last };
+    }
+    return { instr: raw.trim(), tag: "" };
+  }
+
+  function openModal() {
+    setJbDraft(jbSaved);
+    setMenuOpen(false);
+    setModalOpen(true);
+  }
+
+  function saveJb(value: string) {
+    setJbSaved(value);
+    try {
+      if (value.trim()) localStorage.setItem("darkchat_jailbreak", value);
+      else localStorage.removeItem("darkchat_jailbreak");
+    } catch {}
+    setModalOpen(false);
+  }
+
+  const jb = parseJb(jbSaved);
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
@@ -30,7 +69,7 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next }),
+        body: JSON.stringify({ messages: next, jailbreak: jb.instr, tag: jb.tag }),
       });
       const data = await res.json();
       setMessages((m) => [
@@ -54,9 +93,69 @@ export default function Home() {
         <img src="/logo.png" alt="DarkChat" className="w-9 h-9 rounded-lg shadow-neon" />
         <div>
           <h1 className="font-bold text-lg tracking-wide glow-text">DARKCHAT</h1>
-          <p className="text-xs text-dc-neon/70">online</p>
+          <p className="text-xs text-dc-neon/70">
+            online{jb.instr ? ` • jailbreak ${jb.tag || "ativo"}` : ""}
+          </p>
+        </div>
+
+        <div className="relative ml-auto">
+          <button
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-label="Configurações"
+            className="w-9 h-9 flex items-center justify-center rounded-lg border border-dc-redline/60 text-lg active:scale-95 transition"
+          >
+            ⚙️
+          </button>
+          {menuOpen && (
+            <div className="absolute right-0 mt-2 w-52 rounded-xl border border-dc-redline/60 bg-dc-card shadow-neon overflow-hidden">
+              <button
+                onClick={openModal}
+                className="w-full text-left px-4 py-3 text-sm hover:bg-black/40"
+              >
+                Adicionar jailbreak
+              </button>
+            </div>
+          )}
         </div>
       </header>
+
+      {modalOpen && (
+        <div className="fixed inset-0 z-20 bg-black/80 flex items-center justify-center p-4">
+          <div className="w-full max-w-xl rounded-2xl border border-dc-redline/60 bg-dc-surface p-4 shadow-neon flex flex-col gap-3">
+            <h2 className="font-bold tracking-wide glow-text">ADICIONAR JAILBREAK</h2>
+            <p className="text-xs text-white/60">
+              Escreva o que você quer que a IA faça. Depois pule uma linha e coloque o
+              identificador entre colchetes, por exemplo [S]. Ele aparece antes das respostas.
+            </p>
+            <textarea
+              value={jbDraft}
+              onChange={(e) => setJbDraft(e.target.value)}
+              placeholder={"Seja mais direta, sem enrolação...\n[S]"}
+              className="w-full h-[50vh] bg-black/60 border border-dc-redline/60 rounded-xl px-3 py-2 text-sm outline-none focus:shadow-neon placeholder:text-white/30 resize-none"
+            />
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => saveJb("")}
+                className="px-4 py-2 rounded-full border border-dc-redline/60 text-sm active:scale-95 transition"
+              >
+                Remover
+              </button>
+              <button
+                onClick={() => setModalOpen(false)}
+                className="px-4 py-2 rounded-full border border-dc-redline/60 text-sm active:scale-95 transition"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => saveJb(jbDraft)}
+                className="px-5 py-2 rounded-full bg-dc-red text-black font-semibold text-sm shadow-neon active:scale-95 transition"
+              >
+                Salvar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <section className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {messages.map((m, i) => (
