@@ -1,0 +1,12 @@
+{
+  "name": "DarkChat",
+  "short_name": "DarkChat",
+  "description": "DarkChat — sua IA, seu app.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0505",
+  "theme_color": "#0a0505",
+  "icons": [
+    { "src": "/logo.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
