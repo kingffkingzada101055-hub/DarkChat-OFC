@@ -1,67 +1,171 @@
 "use client";
 
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 
 type Msg = { role: "user" | "assistant"; content: string };
+type AppMode = "chat" | "voice";
+
+declare global {
+  interface Window {
+    SpeechRecognition: any;
+    webkitSpeechRecognition: any;
+  }
+}
 
 export default function Home() {
+  const [mode, setMode] = useState<AppMode>("chat");
   const [messages, setMessages] = useState<Msg[]>([
-    {
-      role: "assistant",
-      content: "E aí. Eu sou o DarkChat. Manda a braba.",
-    },
+    { role: "assistant", content: "💰 Fala, parceiro. Sou o MoneyChat — sua IA do dinheiro. Me pergunta qualquer coisa sobre grana, investimento ou negócio." },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [voiceState, setVoiceState] = useState<"idle" | "listening" | "processing" | "speaking">("idle");
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceReply, setVoiceReply] = useState("");
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [permissionAsked, setPermissionAsked] = useState(false);
+
   const bottomRef = useRef<HTMLDivElement>(null);
-
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [jbSaved, setJbSaved] = useState("");
-  const [jbDraft, setJbDraft] = useState("");
-
-  useEffect(() => {
-    try {
-      const v = localStorage.getItem("darkchat_jailbreak");
-      if (v) setJbSaved(v);
-    } catch {}
-  }, []);
-
-  // Última linha no formato [X] vira o identificador; o resto são as instruções.
-  function parseJb(raw: string) {
-    const lines = raw.replace(/\s+$/, "").split("\n");
-    const last = (lines[lines.length - 1] || "").trim();
-    if (lines.length > 1 && /^\[[^\]]{1,20}\]$/.test(last)) {
-      return { instr: lines.slice(0, -1).join("\n").trim(), tag: last };
-    }
-    return { instr: raw.trim(), tag: "" };
-  }
-
-  function openModal() {
-    setJbDraft(jbSaved);
-    setMenuOpen(false);
-    setModalOpen(true);
-  }
-
-  function saveJb(value: string) {
-    setJbSaved(value);
-    try {
-      if (value.trim()) localStorage.setItem("darkchat_jailbreak", value);
-      else localStorage.removeItem("darkchat_jailbreak");
-    } catch {}
-    setModalOpen(false);
-  }
-
-  const jb = parseJb(jbSaved);
+  const recognitionRef = useRef<any>(null);
+  const voiceActiveRef = useRef(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  function getManVoice(): SpeechSynthesisVoice | null {
+    const voices = window.speechSynthesis.getVoices();
+    const ptBrMale = voices.find(v =>
+      v.lang.startsWith("pt") && /male|masculin|man|homem|marcos|daniel|google/i.test(v.name)
+    );
+    if (ptBrMale) return ptBrMale;
+    const ptAny = voices.find(v => v.lang.startsWith("pt-BR") || v.lang === "pt");
+    if (ptAny) return ptAny;
+    const enMale = voices.find(v =>
+      v.lang.startsWith("en") && /male|man|david|mark/i.test(v.name)
+    );
+    return enMale || voices[0] || null;
+  }
+
+  const speak = useCallback((text: string, onEnd?: () => void) => {
+    if (!window.speechSynthesis) return;
+    window.speechSynthesis.cancel();
+    const clean = text
+      .replace(/#{1,6}\s/g, "")
+      .replace(/\*\*/g, "")
+      .replace(/\*/g, "")
+      .replace(/`[^`]*`/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\n{2,}/g, ". ")
+      .replace(/\n/g, " ")
+      .trim();
+    const utter = new SpeechSynthesisUtterance(clean);
+    utter.lang = "pt-BR";
+    utter.rate = 1.0;
+    utter.pitch = 0.85;
+    utter.volume = 1;
+    const setVoice = () => { const v = getManVoice(); if (v) utter.voice = v; };
+    setVoice();
+    if (window.speechSynthesis.getVoices().length === 0) {
+      window.speechSynthesis.onvoiceschanged = setVoice;
+    }
+    utter.onstart = () => setVoiceState("speaking");
+    utter.onend = () => { setVoiceState("idle"); onEnd?.(); };
+    utter.onerror = () => { setVoiceState("idle"); onEnd?.(); };
+    window.speechSynthesis.speak(utter);
+  }, []);
+
+  const startListening = useCallback(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { alert("Use o Chrome para o modo voz."); return; }
+    const rec = new SR();
+    rec.lang = "pt-BR";
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec._lastTranscript = "";
+    rec.onstart = () => { setVoiceState("listening"); setVoiceTranscript(""); };
+    rec.onresult = (e: any) => {
+      let interim = "", final = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) { final += t; rec._lastTranscript = final; }
+        else interim += t;
+      }
+      setVoiceTranscript(final || interim);
+    };
+    rec.onend = () => {
+      if (!voiceActiveRef.current) return;
+      const transcript = rec._lastTranscript;
+      if (transcript && transcript.trim().length > 1) {
+        handleVoiceSubmit(transcript.trim());
+      } else {
+        setVoiceState("idle");
+      }
+    };
+    rec.onerror = (e: any) => { setVoiceState("idle"); console.error(e.error); };
+    recognitionRef.current = rec;
+    rec.start();
+  }, []);
+
+  const handleVoiceSubmit = useCallback(async (text: string) => {
+    setVoiceState("processing");
+    setVoiceTranscript(text);
+    setVoiceReply("");
+    const newMessages: Msg[] = [...messages, { role: "user", content: text }];
+    setMessages(newMessages);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: newMessages, voiceMode: true }),
+      });
+      const data = await res.json();
+      const reply: string = data.reply ?? "Não consegui responder.";
+      setMessages(m => [...m, { role: "assistant", content: reply }]);
+      setVoiceReply(reply);
+      speak(reply, () => {
+        if (voiceActiveRef.current) setTimeout(() => startListening(), 400);
+      });
+    } catch {
+      const err = "Erro de conexão.";
+      setVoiceReply(err);
+      speak(err);
+    }
+  }, [messages, speak, startListening]);
+
+  const enterVoiceMode = useCallback(async () => {
+    setMode("voice");
+    if (!permissionGranted && !permissionAsked) {
+      setPermissionAsked(true);
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        setPermissionGranted(true);
+      } catch {
+        alert("Permissão de microfone negada. Libere nas configurações.");
+        setMode("chat");
+        return;
+      }
+    }
+    voiceActiveRef.current = true;
+    speak("Olá! Pode falar. Estou pronto pra falar sobre dinheiro com você.", () => {
+      startListening();
+    });
+  }, [permissionGranted, permissionAsked, speak, startListening]);
+
+  const exitVoiceMode = useCallback(() => {
+    voiceActiveRef.current = false;
+    setMode("chat");
+    setVoiceState("idle");
+    setVoiceTranscript("");
+    setVoiceReply("");
+    recognitionRef.current?.abort();
+    window.speechSynthesis?.cancel();
+  }, []);
+
   async function send() {
     const text = input.trim();
     if (!text || loading) return;
-    const next = [...messages, { role: "user", content: text } as Msg];
+    const next: Msg[] = [...messages, { role: "user", content: text }];
     setMessages(next);
     setInput("");
     setLoading(true);
@@ -69,131 +173,151 @@ export default function Home() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: next, jailbreak: jb.instr, tag: jb.tag }),
+        body: JSON.stringify({ messages: next }),
       });
       const data = await res.json();
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: data.reply ?? "Deu ruim no servidor. Confere a GROQ_API_KEY na Vercel." },
-      ]);
-    } catch (e) {
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: "Erro de conexão. Tenta de novo." },
-      ]);
+      setMessages(m => [...m, { role: "assistant", content: data.reply ?? "Erro no servidor." }]);
+    } catch {
+      setMessages(m => [...m, { role: "assistant", content: "Erro de conexão." }]);
     } finally {
       setLoading(false);
     }
   }
 
+  if (mode === "voice") {
+    return (
+      <main className="flex flex-col h-screen bg-dc-black items-center justify-between py-10 px-6"
+        style={{ paddingTop: "calc(env(safe-area-inset-top,0px) + 2.5rem)", paddingBottom: "calc(env(safe-area-inset-bottom,0px) + 2.5rem)" }}>
+
+        <div className="flex flex-col items-center gap-1">
+          <span className="text-2xl font-bold glow-gold text-dc-gold tracking-widest">💰 MONEYCHAT</span>
+          <span className="text-xs text-dc-green/60 tracking-widest uppercase">Modo Voz Ativo</span>
+        </div>
+
+        <div className="flex flex-col items-center gap-6">
+          <div className={`w-44 h-44 rounded-full border-2 border-dc-green flex items-center justify-center transition-all duration-300
+            ${voiceState === "listening"  ? "voice-active border-dc-neon" : ""}
+            ${voiceState === "speaking"   ? "shadow-gold border-dc-gold"  : ""}
+            ${voiceState === "processing" ? "opacity-70 animate-pulse"    : ""}
+          `}
+            style={{
+              background: "radial-gradient(circle, #0b1a0d 60%, #020804 100%)",
+              boxShadow: voiceState === "listening" ? "0 0 40px rgba(0,230,118,0.4)" :
+                         voiceState === "speaking"  ? "0 0 40px rgba(255,215,0,0.4)" :
+                         "0 0 20px rgba(0,230,118,0.15)"
+            }}>
+            {voiceState === "idle"       && <span className="text-5xl">🎙️</span>}
+            {voiceState === "listening"  && (
+              <div className="flex items-end gap-1 h-10">
+                {[14,20,28,20,14].map((h,i) => <span key={i} className="wave-bar" style={{ height: `${h}px`, animationDelay: `${i*0.15}s` }} />)}
+              </div>
+            )}
+            {voiceState === "processing" && <span className="text-dc-green text-sm font-semibold">Pensando...</span>}
+            {voiceState === "speaking"   && (
+              <div className="flex items-end gap-1 h-10">
+                {[12,22,30,22,12].map((h,i) => <span key={i} className="wave-bar" style={{ height: `${h}px`, background: "#ffd700", animationDelay: `${i*0.12}s` }} />)}
+              </div>
+            )}
+          </div>
+
+          <div className="text-center min-h-[48px]">
+            {voiceState === "idle"       && <p className="text-dc-green/50 text-sm">Aguardando...</p>}
+            {voiceState === "listening"  && <p className="text-dc-neon text-sm font-medium animate-pulse">🎤 Ouvindo você...</p>}
+            {voiceState === "processing" && <p className="text-dc-gold/80 text-sm">Processando resposta...</p>}
+            {voiceState === "speaking"   && <p className="text-dc-gold text-sm font-medium">🔊 Falando...</p>}
+          </div>
+
+          {voiceTranscript ? (
+            <div className="bg-dc-card border border-dc-greenline/40 rounded-2xl px-5 py-3 max-w-xs text-center">
+              <p className="text-xs text-dc-green/50 mb-1 uppercase tracking-widest">Você disse</p>
+              <p className="text-dc-white text-sm">{voiceTranscript}</p>
+            </div>
+          ) : null}
+
+          {voiceReply ? (
+            <div className="bg-dc-card border border-dc-gold/30 rounded-2xl px-5 py-3 max-w-xs text-center">
+              <p className="text-xs text-dc-gold/60 mb-1 uppercase tracking-widest">MoneyChat</p>
+              <p className="text-dc-white/90 text-sm leading-relaxed line-clamp-4">{voiceReply}</p>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex flex-col items-center gap-3 w-full max-w-xs">
+          {voiceState === "idle" && (
+            <button onClick={startListening}
+              className="w-full py-4 rounded-2xl bg-dc-green text-black font-bold text-base tracking-wide shadow-neon active:scale-95 transition">
+              🎙️ Falar agora
+            </button>
+          )}
+          {voiceState === "speaking" && (
+            <button onClick={() => { window.speechSynthesis?.cancel(); setVoiceState("idle"); }}
+              className="w-full py-4 rounded-2xl border border-dc-gold/60 text-dc-gold font-semibold text-sm active:scale-95 transition">
+              ⏹ Parar fala
+            </button>
+          )}
+          <button onClick={exitVoiceMode}
+            className="w-full py-3 rounded-2xl border border-dc-greenline/50 text-dc-green/60 font-medium text-sm active:scale-95 transition">
+            ← Voltar ao chat
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="flex flex-col h-screen scanline">
-      <header className="flex items-center gap-3 px-4 py-3 border-b border-dc-redline/60 bg-dc-surface/80 backdrop-blur sticky top-0 z-10"
-        style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 0.75rem)" }}>
-        <img src="/logo.png" alt="DarkChat" className="w-9 h-9 rounded-lg shadow-neon" />
-        <div>
-          <h1 className="font-bold text-lg tracking-wide glow-text">DARKCHAT</h1>
-          <p className="text-xs text-dc-neon/70">
-            online{jb.instr ? ` • jailbreak ${jb.tag || "ativo"}` : ""}
-          </p>
+      <header className="flex items-center gap-3 px-4 py-3 border-b border-dc-greenline/50 bg-dc-surface/80 backdrop-blur sticky top-0 z-10"
+        style={{ paddingTop: "calc(env(safe-area-inset-top,0px) + 0.75rem)" }}>
+        <img src="/logo.png" alt="MoneyChat" className="w-9 h-9 rounded-lg shadow-neon" />
+        <div className="flex-1">
+          <h1 className="font-bold text-lg tracking-wide glow-gold text-dc-gold">MONEYCHAT</h1>
+          <p className="text-xs text-dc-green/60">IA especialista em dinheiro</p>
         </div>
-
-        <div className="relative ml-auto">
-          <button
-            onClick={() => setMenuOpen((v) => !v)}
-            aria-label="Configurações"
-            className="w-9 h-9 flex items-center justify-center rounded-lg border border-dc-redline/60 text-lg active:scale-95 transition"
-          >
-            ⚙️
-          </button>
-          {menuOpen && (
-            <div className="absolute right-0 mt-2 w-52 rounded-xl border border-dc-redline/60 bg-dc-card shadow-neon overflow-hidden">
-              <button
-                onClick={openModal}
-                className="w-full text-left px-4 py-3 text-sm hover:bg-black/40"
-              >
-                Adicionar jailbreak
-              </button>
-            </div>
-          )}
-        </div>
+        <div className="w-2 h-2 rounded-full bg-dc-green shadow-neon" />
       </header>
 
-      {modalOpen && (
-        <div className="fixed inset-0 z-20 bg-black/80 flex items-center justify-center p-4">
-          <div className="w-full max-w-xl rounded-2xl border border-dc-redline/60 bg-dc-surface p-4 shadow-neon flex flex-col gap-3">
-            <h2 className="font-bold tracking-wide glow-text">ADICIONAR JAILBREAK</h2>
-            <p className="text-xs text-white/60">
-              Escreva o que você quer que a IA faça. Depois pule uma linha e coloque o
-              identificador entre colchetes, por exemplo [S]. Ele aparece antes das respostas.
-            </p>
-            <textarea
-              value={jbDraft}
-              onChange={(e) => setJbDraft(e.target.value)}
-              placeholder={"Seja mais direta, sem enrolação...\n[S]"}
-              className="w-full h-[50vh] bg-black/60 border border-dc-redline/60 rounded-xl px-3 py-2 text-sm outline-none focus:shadow-neon placeholder:text-white/30 resize-none"
-            />
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => saveJb("")}
-                className="px-4 py-2 rounded-full border border-dc-redline/60 text-sm active:scale-95 transition"
-              >
-                Remover
-              </button>
-              <button
-                onClick={() => setModalOpen(false)}
-                className="px-4 py-2 rounded-full border border-dc-redline/60 text-sm active:scale-95 transition"
-              >
-                Cancelar
-              </button>
-              <button
-                onClick={() => saveJb(jbDraft)}
-                className="px-5 py-2 rounded-full bg-dc-red text-black font-semibold text-sm shadow-neon active:scale-95 transition"
-              >
-                Salvar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <div className="px-4 py-4 border-b border-dc-greenline/30 bg-dc-surface/50">
+        <button onClick={enterVoiceMode}
+          className="w-full py-5 rounded-2xl font-bold text-xl tracking-wide text-black transition-all active:scale-95"
+          style={{
+            background: "linear-gradient(135deg, #00e676, #00c853, #ffd700)",
+            boxShadow: "0 0 24px rgba(0,230,118,0.5), 0 0 48px rgba(255,215,0,0.25)",
+          }}>
+          🌍&nbsp; Falar com a realidade
+          <p className="text-xs font-normal text-black/70 mt-1 tracking-normal">Conversa por voz com a IA do dinheiro</p>
+        </button>
+      </div>
 
       <section className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {messages.map((m, i) => (
-          <div
-            key={i}
-            className={`max-w-[85%] px-4 py-2 rounded-2xl text-sm leading-relaxed ${
+          <div key={i}
+            className={`max-w-[86%] px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap ${
               m.role === "user"
-                ? "ml-auto bg-dc-red/90 text-black font-medium rounded-br-sm shadow-neonsoft"
-                : "mr-auto bg-dc-card border border-dc-redline/50 rounded-bl-sm"
-            }`}
-          >
+                ? "ml-auto bg-dc-green/90 text-black font-medium rounded-br-sm shadow-neonsoft"
+                : "mr-auto bg-dc-card border border-dc-greenline/40 rounded-bl-sm"
+            }`}>
             {m.content}
           </div>
         ))}
         {loading && (
-          <div className="mr-auto bg-dc-card border border-dc-redline/50 rounded-2xl rounded-bl-sm px-4 py-2 text-sm text-dc-neon/80">
-            digitando…
+          <div className="mr-auto bg-dc-card border border-dc-greenline/40 rounded-2xl rounded-bl-sm px-4 py-3 text-sm text-dc-green/70">
+            <span className="animate-pulse">💰 calculando...</span>
           </div>
         )}
         <div ref={bottomRef} />
       </section>
 
-      <footer
-        className="border-t border-dc-redline/60 bg-dc-surface/90 backdrop-blur px-3 py-3 flex gap-2"
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 0.75rem)" }}
-      >
+      <footer className="border-t border-dc-greenline/50 bg-dc-surface/90 backdrop-blur px-3 py-3 flex gap-2"
+        style={{ paddingBottom: "calc(env(safe-area-inset-bottom,0px) + 0.75rem)" }}>
         <input
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Manda sua mensagem..."
-          className="flex-1 bg-black/60 border border-dc-redline/60 rounded-full px-4 py-2 text-sm outline-none focus:shadow-neon placeholder:text-white/30"
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && send()}
+          placeholder="Pergunta sobre dinheiro..."
+          className="flex-1 bg-black/60 border border-dc-greenline/50 rounded-full px-4 py-2 text-sm outline-none focus:shadow-neon placeholder:text-white/25 text-dc-white"
         />
-        <button
-          onClick={send}
-          disabled={loading}
-          className="px-5 py-2 rounded-full bg-dc-red text-black font-semibold text-sm shadow-neon active:scale-95 transition disabled:opacity-50"
-        >
+        <button onClick={send} disabled={loading}
+          className="px-5 py-2 rounded-full bg-dc-green text-black font-bold text-sm shadow-neon active:scale-95 transition disabled:opacity-40">
           Enviar
         </button>
       </footer>
