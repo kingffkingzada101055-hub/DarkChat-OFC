@@ -33,47 +33,62 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  function getManVoice(): SpeechSynthesisVoice | null {
-    const voices = window.speechSynthesis.getVoices();
-    const ptBrMale = voices.find(v =>
-      v.lang.startsWith("pt") && /male|masculin|man|homem|marcos|daniel|google/i.test(v.name)
-    );
-    if (ptBrMale) return ptBrMale;
-    const ptAny = voices.find(v => v.lang.startsWith("pt-BR") || v.lang === "pt");
-    if (ptAny) return ptAny;
-    const enMale = voices.find(v =>
-      v.lang.startsWith("en") && /male|man|david|mark/i.test(v.name)
-    );
-    return enMale || voices[0] || null;
-  }
-
-  const speak = useCallback((text: string, onEnd?: () => void) => {
-    if (!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-    const clean = text
-      .replace(/#{1,6}\s/g, "")
-      .replace(/\*\*/g, "")
-      .replace(/\*/g, "")
-      .replace(/`[^`]*`/g, "")
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-      .replace(/\n{2,}/g, ". ")
-      .replace(/\n/g, " ")
-      .trim();
-    const utter = new SpeechSynthesisUtterance(clean);
-    utter.lang = "pt-BR";
-    utter.rate = 1.0;
-    utter.pitch = 0.85;
-    utter.volume = 1;
-    const setVoice = () => { const v = getManVoice(); if (v) utter.voice = v; };
-    setVoice();
-    if (window.speechSynthesis.getVoices().length === 0) {
-      window.speechSynthesis.onvoiceschanged = setVoice;
+  const speak = useCallback(async (text: string, onEnd?: () => void) => {
+    if (!text) return;
+    setVoiceState("speaking");
+    try {
+      const res = await fetch("/api/voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) throw new Error("TTS falhou");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => {
+        setVoiceState("idle");
+        URL.revokeObjectURL(url);
+        onEnd?.();
+      };
+      audio.onerror = () => {
+        setVoiceState("idle");
+        URL.revokeObjectURL(url);
+        onEnd?.();
+      };
+      await audio.play();
+    } catch (e) {
+      console.error(e);
+      setVoiceState("idle");
+      onEnd?.();
     }
-    utter.onstart = () => setVoiceState("speaking");
-    utter.onend = () => { setVoiceState("idle"); onEnd?.(); };
-    utter.onerror = () => { setVoiceState("idle"); onEnd?.(); };
-    window.speechSynthesis.speak(utter);
   }, []);
+
+  const handleVoiceSubmit = useCallback(async (text: string) => {
+    setVoiceState("processing");
+    setVoiceTranscript(text);
+    setVoiceReply("");
+    const newMessages: Msg[] = [...messages, { role: "user", content: text }];
+    setMessages(newMessages);
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: newMessages, voiceMode: true }),
+      });
+      const data = await res.json();
+      const reply: string = data.reply ?? "Não consegui responder.";
+      setMessages(m => [...m, { role: "assistant", content: reply }]);
+      setVoiceReply(reply);
+      speak(reply, () => {
+        if (voiceActiveRef.current) setTimeout(() => startListening(), 400);
+      });
+    } catch {
+      const err = "Erro de conexão.";
+      setVoiceReply(err);
+      speak(err);
+    }
+  }, [messages, speak]);
 
   const startListening = useCallback(() => {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -105,33 +120,7 @@ export default function Home() {
     rec.onerror = (e: any) => { setVoiceState("idle"); console.error(e.error); };
     recognitionRef.current = rec;
     rec.start();
-  }, []);
-
-  const handleVoiceSubmit = useCallback(async (text: string) => {
-    setVoiceState("processing");
-    setVoiceTranscript(text);
-    setVoiceReply("");
-    const newMessages: Msg[] = [...messages, { role: "user", content: text }];
-    setMessages(newMessages);
-    try {
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: newMessages, voiceMode: true }),
-      });
-      const data = await res.json();
-      const reply: string = data.reply ?? "Não consegui responder.";
-      setMessages(m => [...m, { role: "assistant", content: reply }]);
-      setVoiceReply(reply);
-      speak(reply, () => {
-        if (voiceActiveRef.current) setTimeout(() => startListening(), 400);
-      });
-    } catch {
-      const err = "Erro de conexão.";
-      setVoiceReply(err);
-      speak(err);
-    }
-  }, [messages, speak, startListening]);
+  }, [handleVoiceSubmit]);
 
   const enterVoiceMode = useCallback(async () => {
     setMode("voice");
