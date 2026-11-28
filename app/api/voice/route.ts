@@ -3,37 +3,33 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: "Sem API key" }, { status: 500 });
-
   const { text } = await req.json();
   if (!text) return NextResponse.json({ error: "Sem texto" }, { status: 400 });
 
-  const resp = await fetch("https://api.groq.com/openai/v1/audio/speech", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: "playai-tts",
-      input: text,
-      voice: "Chico-PlayAI",
-      response_format: "mp3",
-    }),
-  });
+  const resp = await fetch(
+    `https://api.elevenlabs.io/v1/text-to-speech/TX3LPaxmHKxFdv7VOQHJ/stream`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "xi-api-key": process.env.ELEVENLABS_API_KEY ?? "",
+      },
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
+    }
+  );
 
   if (!resp.ok) {
     const err = await resp.text();
-    console.error("TTS error:", err);
+    console.error("ElevenLabs error:", err);
     return NextResponse.json({ error: "Erro no TTS" }, { status: 500 });
   }
 
   const audioBuffer = await resp.arrayBuffer();
   return new NextResponse(audioBuffer, {
-    headers: {
-      "Content-Type": "audio/mpeg",
-      "Content-Length": audioBuffer.byteLength.toString(),
-    },
+    headers: { "Content-Type": "audio/mpeg" },
   });
 }
