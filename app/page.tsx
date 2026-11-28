@@ -28,40 +28,76 @@ export default function Home() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const voiceActiveRef = useRef(false);
+  const audioRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  const speak = useCallback(async (text: string, onEnd?: () => void) => {
-    if (!text) return;
-    setVoiceState("speaking");
-    try {
-      const res = await fetch("/api/voice", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) throw new Error("TTS falhou");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.onended = () => {
-        setVoiceState("idle");
-        URL.revokeObjectURL(url);
-        onEnd?.();
+  // Carrega vozes assim que o componente monta
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
       };
-      audio.onerror = () => {
-        setVoiceState("idle");
-        URL.revokeObjectURL(url);
-        onEnd?.();
-      };
-      await audio.play();
-    } catch (e) {
-      console.error(e);
-      setVoiceState("idle");
-      onEnd?.();
     }
+  }, []);
+
+  function getManVoice(): SpeechSynthesisVoice | null {
+    const voices = window.speechSynthesis.getVoices();
+    // Tenta voz masculina pt-BR
+    const ptBrMale = voices.find(v =>
+      (v.lang === "pt-BR" || v.lang === "pt_BR") &&
+      /male|masculin|man|homem|marcos|daniel|google|antonio/i.test(v.name)
+    );
+    if (ptBrMale) return ptBrMale;
+    // Qualquer voz pt-BR
+    const ptBr = voices.find(v => v.lang === "pt-BR" || v.lang === "pt_BR");
+    if (ptBr) return ptBr;
+    // Qualquer voz pt
+    const pt = voices.find(v => v.lang.startsWith("pt"));
+    if (pt) return pt;
+    return voices[0] || null;
+  }
+
+  const speak = useCallback((text: string, onEnd?: () => void) => {
+    if (!window.speechSynthesis) { onEnd?.(); return; }
+    window.speechSynthesis.cancel();
+
+    const clean = text
+      .replace(/#{1,6}\s/g, "")
+      .replace(/\*\*/g, "")
+      .replace(/\*/g, "")
+      .replace(/`[^`]*`/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\n{2,}/g, ". ")
+      .replace(/\n/g, " ")
+      .trim();
+
+    const utter = new SpeechSynthesisUtterance(clean);
+    utter.lang = "pt-BR";
+    utter.rate = 0.95;
+    utter.pitch = 0.7;  // bem grave
+    utter.volume = 1;
+
+    const trySpeak = () => {
+      const v = getManVoice();
+      if (v) utter.voice = v;
+      utter.onstart = () => setVoiceState("speaking");
+      utter.onend = () => { setVoiceState("idle"); onEnd?.(); };
+      utter.onerror = () => { setVoiceState("idle"); onEnd?.(); };
+      window.speechSynthesis.speak(utter);
+    };
+
+    const voices = window.speechSynthesis.getVoices();
+    if (voices.length > 0) {
+      trySpeak();
+    } else {
+      window.speechSynthesis.onvoiceschanged = () => trySpeak();
+    }
+
+    audioRef.current = utter;
   }, []);
 
   const handleVoiceSubmit = useCallback(async (text: string) => {
@@ -186,8 +222,8 @@ export default function Home() {
         <div className="flex flex-col items-center gap-6">
           <div className={`w-44 h-44 rounded-full border-2 border-dc-green flex items-center justify-center transition-all duration-300
             ${voiceState === "listening"  ? "voice-active border-dc-neon" : ""}
-            ${voiceState === "speaking"   ? "shadow-gold border-dc-gold"  : ""}
-            ${voiceState === "processing" ? "opacity-70 animate-pulse"    : ""}
+            ${voiceState === "speaking"   ? "border-dc-gold"  : ""}
+            ${voiceState === "processing" ? "opacity-70 animate-pulse" : ""}
           `}
             style={{
               background: "radial-gradient(circle, #0b1a0d 60%, #020804 100%)",
