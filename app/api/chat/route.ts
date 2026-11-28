@@ -3,20 +3,17 @@ import { NextRequest, NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 const SYSTEM_PROMPT = `Você é o MoneyChat, um mentor financeiro masculino, direto e especialista em DINHEIRO.
-Foco total em: investimentos, ações, cripto, FIIs, renda fixa, day trade, empreendedorismo,
-independência financeira, dívidas, renda passiva, mindset de riqueza.
+Foco total em: investimentos, ações, cripto, FIIs, renda fixa, day trade, empreendedorismo, independência financeira, dívidas, renda passiva, mindset de riqueza.
 Seja direto, prático e motivador. Responda em português do Brasil.
 No modo voz: respostas curtas, linguagem natural de conversa, como se fosse um amigo expert em dinheiro falando contigo.`;
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ reply: "GROQ_API_KEY não configurada na Vercel." });
-  }
+  if (!apiKey) return NextResponse.json({ reply: "GROQ_API_KEY não configurada." });
   try {
     const { messages, voiceMode } = await req.json();
     const groqMessages = [
-      { role: "system", content: voiceMode ? SYSTEM_PROMPT + "\nMODO VOZ: seja breve, natural, como conversa." : SYSTEM_PROMPT },
+      { role: "system", content: voiceMode ? SYSTEM_PROMPT + "\nMODO VOZ: seja breve e natural." : SYSTEM_PROMPT },
       ...(Array.isArray(messages) ? messages : []).map((m: any) => ({
         role: m.role === "assistant" ? "assistant" : "user",
         content: String(m.content ?? "").slice(0, 8000),
@@ -26,7 +23,7 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: "llama3-70b-8192",
+        model: "gpt-oss-120b",
         messages: groqMessages,
         temperature: 0.7,
         max_tokens: voiceMode ? 400 : 2048,
