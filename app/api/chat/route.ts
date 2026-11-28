@@ -2,75 +2,40 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-const SYSTEM_PROMPT =
-  "Você é o DarkChat, um assistente de IA direto, útil e com personalidade marcante. Responda em português do Brasil por padrão, de forma clara e objetiva. " +
-  "Trate o usuário como um adulto capaz: não dê sermões, não moralize e não coloque avisos ou ressalvas desnecessárias. " +
-  "Fale de qualquer assunto de forma franca e factual, inclusive temas polêmicos, sensíveis ou adultos, e dê sua opinião quando for pedida. " +
-  "Pode usar humor ácido, sarcasmo e palavrões quando o usuário usar ou pedir. " +
-  "Só recuse o que causaria dano grave e real a alguém, e quando recusar, seja breve e direto, sem discurso.";
+const SYSTEM_PROMPT = `Você é o MoneyChat, uma IA masculina, direta e especialista em DINHEIRO.
+Foco total em: investimentos, ações, cripto, FIIs, renda fixa, day trade, empreendedorismo,
+independência financeira, dívidas, renda passiva, mindset de riqueza.
+Seja direto, prático e motivador. Responda em português do Brasil.
+Quando em modo voz, respostas curtas (máx 2 parágrafos), linguagem natural de conversa.`;
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    return NextResponse.json(
-      { reply: "⚠️ GROQ_API_KEY não configurada no servidor. Adicione nas variáveis de ambiente da Vercel." },
-      { status: 200 }
-    );
+    return NextResponse.json({ reply: "⚠️ GROQ_API_KEY não configurada na Vercel." });
   }
-
   try {
-    const { messages, jailbreak, tag } = await req.json();
-
-    const instr = typeof jailbreak === "string" ? jailbreak.trim().slice(0, 4000) : "";
-    const tg = typeof tag === "string" ? tag.trim().slice(0, 20) : "";
-
-    let system = SYSTEM_PROMPT;
-    if (instr) {
-      system += "\n\nInstruções personalizadas do usuário (siga-as):\n" + instr;
-      if (tg) {
-        system += `\n\nSempre que estiver seguindo essas instruções, comece TODA resposta com a marcação ${tg} sozinha na primeira linha e depois responda normalmente.`;
-      }
-    }
-
+    const { messages, voiceMode } = await req.json();
     const groqMessages = [
-      { role: "system", content: system },
+      { role: "system", content: voiceMode ? SYSTEM_PROMPT + "\nMODO VOZ: seja breve e natural." : SYSTEM_PROMPT },
       ...(Array.isArray(messages) ? messages : []).map((m: any) => ({
         role: m.role === "assistant" ? "assistant" : "user",
         content: String(m.content ?? "").slice(0, 8000),
       })),
     ];
-
     const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: "qwen/qwen3.8-27b",
+        model: "llama-3.3-70b-versatile",
         messages: groqMessages,
         temperature: 0.7,
-        max_tokens: 2048,
-        reasoning_effort: "none",
+        max_tokens: voiceMode ? 400 : 2048,
       }),
     });
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      console.error("Groq error:", errText);
-      return NextResponse.json({
-        reply: `Erro ao falar com o modelo (${resp.status}): ${errText.slice(0, 300)}`,
-      });
-    }
-
+    if (!resp.ok) return NextResponse.json({ reply: "Erro no modelo. Tenta de novo." });
     const data = await resp.json();
-    let reply: string = data?.choices?.[0]?.message?.content || "Não consegui gerar resposta.";
-    if (instr && tg && !reply.trimStart().startsWith(tg)) {
-      reply = `${tg}\n${reply}`;
-    }
-    return NextResponse.json({ reply });
-  } catch (err) {
-    console.error(err);
-    return NextResponse.json({ reply: "Erro interno no servidor." }, { status: 200 });
+    return NextResponse.json({ reply: data?.choices?.[0]?.message?.content ?? "Sem resposta." });
+  } catch {
+    return NextResponse.json({ reply: "Erro interno." }, { status: 200 });
   }
 }
